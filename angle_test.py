@@ -33,4 +33,19 @@ for i in range(cycles):
 
     print("m1 → 0°")
     m1.goAngle(0)
-    time.sleep(
+    time.sleep(4)
+
+    # Move motor 2 +90°, then back
+    print("m2 → +90°")
+    m2.goAngle(90)
+    time.sleep(4)
+
+    print("m2 → 0°")
+    m2.goAngle(0)
+    time.sleep(4)
+
+# After final return
+print("\n✅ Test complete. Both motors should now be at ~0° (original positions).")
+
+# Optional: display final angles from stored values
+print(f"m1 angle: {m1.angle:.2f}°, m2 angle: {m2.angle:.2f}°")
