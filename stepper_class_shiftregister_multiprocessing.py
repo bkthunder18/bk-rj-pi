@@ -46,6 +46,10 @@ class Stepper:
         self.lock = lock           # multiprocessing lock
         self.outputs = outputs     #**store the shared SR byte so all processes read/write the same value**
         self.angle = multiprocessing.Value('d', 0.0)  #**make angle a shared double so child processes update true position**
+        self.cmd_q = multiprocessing.Queue()  #**per-motor command queue to avoid spawning a process per move**
+        self.stop_evt = multiprocessing.Event()  #**signal to cleanly stop the worker**
+        self.worker = multiprocessing.Process(target=self.__worker, args=())  #**dedicated worker to execute steps at steady timing**
+        self.worker.start()  #**start the per-motor worker for smooth motion**
 
         Stepper.num_steppers += 1   # increment the instance count
 
@@ -69,29 +73,71 @@ class Stepper:
 
         self.angle.value = (self.angle.value + dir/Stepper.steps_per_degree) % 360  #**update shared angle so goAngle has correct state**
 
+    def __worker(self):  #**new: steady-timing execution loop improves smoothness**
+        step_period = Stepper.delay / 1e6  # seconds per microstep  #**use configured delay as base period**
+        pending = 0  # signed steps remaining                        #**track remaining steps smoothly**
+        last_time = time.perf_counter()  #**monotonic clock for precise pacing**
+        while not self.stop_evt.is_set():
+            # Non-blocking drain of latest commands; keep only most recent target/delta burst
+            try:
+                # Pull all queued items quickly; coalesce into 'pending'
+                while True:
+                    cmd, val = self.cmd_q.get_nowait()  #**read any queued motion without blocking**
+                    if cmd == 'delta':
+                        pending += int(Stepper.steps_per_degree * abs(val)) * self.__sgn(val)  #**convert delta degrees to signed steps**
+                    elif cmd == 'abs':
+                        curr = self.angle.value
+                        delta = ((val - curr + 180) % 360) - 180
+                        pending = int(Stepper.steps_per_degree * abs(delta)) * self.__sgn(delta)  #**replace with shortest-path absolute move**
+                    elif cmd == 'clear':
+                        pending = 0  #**cancel pending for this motor**
+            except Exception:
+                pass
+
+            now = time.perf_counter()
+            # Only step when period elapsed; keeps speed constant and smooth
+            if pending != 0 and (now - last_time) >= step_period:  #**enforce consistent step interval**
+                dir = 1 if pending > 0 else -1
+                self.__step(dir)
+                pending -= dir
+                last_time = now
+            else:
+                # Sleep a short time to reduce CPU but keep responsiveness
+                time.sleep(0.0005)  #**short sleep to avoid busy-wait while staying smooth**
+
     # Move relative angle from current position:
     def __rotate(self, delta):
-        numSteps = int(Stepper.steps_per_degree * abs(delta))
-        dir = self.__sgn(delta)
-        for _ in range(numSteps):  #**iterate without holding a big lock (lock is inside __step)**
-            self.__step(dir)  #**step uses fine-grained locking for the SR update**
-            time.sleep(Stepper.delay/1e6)
+        # Replaced by queueing to worker for smooth, serialized per-motor motion
+        pass  #**no-op: worker handles motion; kept for interface compatibility**
 
     # Move relative angle from current position:
     def rotate(self, delta):
-        time.sleep(0.1)
-        p = multiprocessing.Process(target=self.__rotate, args=(delta,))
-        p.start()
+        self.cmd_q.put(('delta', float(delta)))  #**enqueue a relative move instead of spawning a new process**
 
     # Move to an absolute angle taking the shortest possible path:
     def goAngle(self, angle):
-        curr = self.angle.value  #**read current shared angle**
-        delta = ((angle - curr + 180) % 360) - 180  #**compute shortest-path delta in [-180,180)**
-        self.rotate(delta)  #**reuse rotate for motion**
+        # Clear any queued older commands, then set latest absolute target
+        self._clear_queue()  #**drop stale commands to avoid direction thrashing**
+        self.cmd_q.put(('abs', float(angle)))  #**enqueue absolute target for smooth shortest-path motion**
+
+    def _clear_queue(self):  #**helper to purge stale commands when a new absolute target arrives**
+        try:
+            while True:
+                self.cmd_q.get_nowait()
+        except Exception:
+            pass
+        self.cmd_q.put(('clear', 0))  #**ensure pending in worker is reset**
 
     # Set the motor zero point
     def zero(self):
         self.angle.value = 0.0  #**reset shared angle to zero**
+
+    def close(self):  #**allow clean shutdown of the worker**
+        self.stop_evt.set()
+        try:
+            self.worker.join(timeout=1.0)
+        except Exception:
+            pass
 
 # Example use:
 
@@ -109,19 +155,22 @@ if __name__ == '__main__':
     m1.zero()  #**initialize shared angle for repeatable absolute moves**
     m2.zero()  #**initialize shared angle for repeatable absolute moves**
 
-    # Demo sequence matching lab intent (simultaneous moves happen because locks are fine-grained)
-    m1.goAngle(90)    #**use absolute positioning per lab remainder**
-    m1.goAngle(-45)   #**use shortest-path absolute move**
+    # Demo sequence — now smooth: each motor’s worker paces steps uniformly,
+    # and absolute commands replace prior ones to avoid "tug-of-war."
+    m1.goAngle(90)    #**absolute move handled smoothly by the worker**
+    m1.goAngle(-45)   #**replaces previous pending for m1 with shortest-path to -45**
 
-    m2.goAngle(-90)   #**independent absolute command can run concurrently**
-    m2.goAngle(45)    #**independent absolute command can run concurrently**
+    m2.goAngle(-90)   #**absolute move on independent worker**
+    m2.goAngle(45)    #**replaces previous pending for m2 with shortest-path to 45**
 
-    m1.goAngle(-135)  #**more absolute moves**
-    m1.goAngle(135)   #**more absolute moves**
-    m1.goAngle(0)     #**return to zero**
+    m1.goAngle(-135)  #**subsequent absolute commands stay smooth**
+    m1.goAngle(135)   #**subsequent absolute commands stay smooth**
+    m1.goAngle(0)     #**final absolute target**
 
     try:
         while True:
-            pass
+            time.sleep(0.1)
     except:
         print('\nend')
+        m1.close()  #**cleanly stop worker**
+        m2.close()  #**cleanly stop worker**
