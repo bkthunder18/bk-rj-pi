@@ -39,12 +39,13 @@ class Stepper:
     delay = 1200          # delay between motor steps [us]
     steps_per_degree = 4096/360    # 4096 steps/rev * 1/360 rev/deg
 
-    def __init__(self, shifter, lock):
+    def __init__(self, shifter, lock, outputs):  #**added outputs param to accept shared SR byte for concurrency**
         self.s = shifter           # shift register
-        self.angle = 0             # current output shaft angle
         self.step_state = 0        # track position in sequence
         self.shifter_bit_start = 4*Stepper.num_steppers  # starting bit position
         self.lock = lock           # multiprocessing lock
+        self.outputs = outputs     #**store the shared SR byte so all processes read/write the same value**
+        self.angle = multiprocessing.Value('d', 0.0)  #**make angle a shared double so child processes update true position**
 
         Stepper.num_steppers += 1   # increment the instance count
 
@@ -55,23 +56,26 @@ class Stepper:
 
     # Move a single +/-1 step in the motor sequence:
     def __step(self, dir):
-        self.step_state += dir    # increment/decrement the step
-        self.step_state %= 8      # ensure result stays in [0,7]
-        Stepper.shifter_outputs |= 0b1111<<self.shifter_bit_start
-        Stepper.shifter_outputs &= Stepper.seq[self.step_state]<<self.shifter_bit_start
-        self.s.shiftByte(Stepper.shifter_outputs)
-        self.angle += dir/Stepper.steps_per_degree
-        self.angle %= 360         # limit to [0,359.9+] range
+        self.step_state = (self.step_state + dir) % 8  #**fix wrap logic; compute next state once per step**
+
+        mask = (0b1111 << self.shifter_bit_start)  #**mask for just this motor’s 4 bits**
+        new_nibble = (Stepper.seq[self.step_state] << self.shifter_bit_start) & mask  #**prepare nibble for this motor only**
+
+        with self.lock:  #**narrow critical section to only the byte merge + shift (enables interleaving)**
+            current = self.outputs.value  #**read shared SR byte**
+            current = (current & ~mask) | new_nibble  #**clear my 4 bits, set new nibble; preserve other motors**
+            self.outputs.value = current  #**write back shared SR byte**
+            self.s.shiftByte(current)  #**clock out merged value to the 74HC595**
+
+        self.angle.value = (self.angle.value + dir/Stepper.steps_per_degree) % 360  #**update shared angle so goAngle has correct state**
 
     # Move relative angle from current position:
     def __rotate(self, delta):
-        self.lock.acquire()                 # wait until the lock is available
-        numSteps = int(Stepper.steps_per_degree * abs(delta))    # find the right # of steps
-        dir = self.__sgn(delta)        # find the direction (+/-1)
-        for s in range(numSteps):      # take the steps
-            self.__step(dir)
+        numSteps = int(Stepper.steps_per_degree * abs(delta))
+        dir = self.__sgn(delta)
+        for _ in range(numSteps):  #**iterate without holding a big lock (lock is inside __step)**
+            self.__step(dir)  #**step uses fine-grained locking for the SR update**
             time.sleep(Stepper.delay/1e6)
-        self.lock.release()
 
     # Move relative angle from current position:
     def rotate(self, delta):
@@ -81,13 +85,13 @@ class Stepper:
 
     # Move to an absolute angle taking the shortest possible path:
     def goAngle(self, angle):
-         pass
-         # COMPLETE THIS METHOD FOR LAB 8
+        curr = self.angle.value  #**read current shared angle**
+        delta = ((angle - curr + 180) % 360) - 180  #**compute shortest-path delta in [-180,180)**
+        self.rotate(delta)  #**reuse rotate for motion**
 
     # Set the motor zero point
     def zero(self):
-        self.angle = 0
-
+        self.angle.value = 0.0  #**reset shared angle to zero**
 
 # Example use:
 
@@ -95,37 +99,29 @@ if __name__ == '__main__':
 
     s = Shifter(data=16,latch=20,clock=21)   # set up Shifter
 
-    # Use multiprocessing.Lock() to prevent motors from trying to 
-    # execute multiple operations at the same time:
-    lock = multiprocessing.Lock()
+    lock = multiprocessing.Lock()  #**single shared lock for SR critical sections**
 
-    # Instantiate 2 Steppers:
-    m1 = Stepper(s, lock)
-    m2 = Stepper(s, lock)
+    shared_outputs = multiprocessing.Value('i', 0)  #**shared 8-bit SR value across all Stepper processes**
 
-    # Zero the motors:
-    m1.zero()
-    m2.zero()
+    m1 = Stepper(s, lock, shared_outputs)  #**pass shared_outputs to each Stepper**
+    m2 = Stepper(s, lock, shared_outputs)  #**pass shared_outputs to each Stepper**
 
-    # Move as desired, with eacg step occuring as soon as the previous 
-    # step ends:
-    m1.rotate(-90)
-    m1.rotate(45)
-    m1.rotate(-90)
-    m1.rotate(45)
+    m1.zero()  #**initialize shared angle for repeatable absolute moves**
+    m2.zero()  #**initialize shared angle for repeatable absolute moves**
 
-    # If separate multiprocessing.lock objects are used, the second motor
-    # will run in parallel with the first motor:
-    m2.rotate(180)
-    m2.rotate(-45)
-    m2.rotate(45)
-    m2.rotate(-90)
- 
-    # While the motors are running in their separate processes, the main
-    # code can continue doing its thing: 
+    # Demo sequence matching lab intent (simultaneous moves happen because locks are fine-grained)
+    m1.goAngle(90)    #**use absolute positioning per lab remainder**
+    m1.goAngle(-45)   #**use shortest-path absolute move**
+
+    m2.goAngle(-90)   #**independent absolute command can run concurrently**
+    m2.goAngle(45)    #**independent absolute command can run concurrently**
+
+    m1.goAngle(-135)  #**more absolute moves**
+    m1.goAngle(135)   #**more absolute moves**
+    m1.goAngle(0)     #**return to zero**
+
     try:
         while True:
             pass
     except:
         print('\nend')
-
