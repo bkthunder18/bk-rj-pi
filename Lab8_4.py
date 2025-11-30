@@ -1,23 +1,11 @@
-# stepper_class_shiftregister_multiprocessing.py
-#
-# ENME441 Lab 8 — Dual 28BYJ-48 via 74HC595 shift register + multiprocessing
-# - Shortest-path absolute moves (goAngle)
-# - Simultaneous motion across motors
-# - Per-motor sequential execution by joining only that motor's process
-#
-# Wiring assumptions:
-#   - One 74HC595 drives up to two 28BYJ-48 steppers via an H-bridge/ULN2003.
-#   - Lower nibble QA..QD = Motor 1 coils, Upper nibble QE..QH = Motor 2 coils.
-#   - Shifter.shiftByte(byte) latches QA..QH on each call.
-#
-# Notes:
+# Notes from lecture:
 #   - Steps per rev = 4096 (28BYJ-48 with gearbox)
 #   - steps_per_degree = 4096/360
-#   - delay is in microseconds (us)
+#   - delay in microseconds
 
 import time
 import multiprocessing
-from shifter import Shifter   # your provided Shifter class (data, latch, clock)
+from shifter import Shifter
 
 class Stepper:
     num_steppers = 0
@@ -79,9 +67,6 @@ class Stepper:
         self.angle.value = 0.0
 
 
-# -------------------------
-# Demonstration sequence
-# -------------------------
 if __name__ == '__main__':
     s = Shifter(data=16, latch=20, clock=21)
     lock = multiprocessing.Lock()
@@ -93,7 +78,7 @@ if __name__ == '__main__':
     m2.zero()
     print(f"Zeroed: m1={m1.angle.value:.1f}°, m2={m2.angle.value:.1f}°")
 
-    # Demo sequence (each motor sequential, both simultaneous)
+    # Step 4: run sequences, both at same time
     p1 = m1.goAngle(90)
     p2 = m2.goAngle(-90)
     p1.join()
