@@ -24,7 +24,7 @@ from turret_motors import TurretMotors  # your motor wrapper
 # ==== USER SETTINGS ====================================================
 
 # Set this to your team ID key in the JSON file (string, e.g. "1", "7", etc.)
-TEAM_ID = "1"
+TEAM_ID = "2"
 
 # Movement increments in turret degrees for each button press:
 PAN_STEP_DEG = 5.0
