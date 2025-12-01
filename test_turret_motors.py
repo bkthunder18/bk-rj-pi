@@ -16,7 +16,7 @@ def main():
         data_pin=16,
         latch_pin=20,
         clock_pin=21,
-        pan_gear_ratio=8.0,   # stepper_deg / turret_deg (pan)
+        pan_gear_ratio=1.0,   # stepper_deg / turret_deg (pan)
         tilt_gear_ratio=6.0,  # stepper_deg / turret_deg (tilt)
     )
 
