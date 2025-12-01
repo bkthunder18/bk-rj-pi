@@ -79,10 +79,13 @@ button { width: 150px; height: 40px; margin: 5px; font-size: 16px; }
 </html>
 """
 
-# ===========================
-# REQUEST HANDLER
-# ===========================
 class Handler(http.server.SimpleHTTPRequestHandler):
+
+    # Track logical angles for manual stepping
+    current_pan = 0.0
+    current_tilt = 0.0
+
+    STEP = 5.0  # degrees per button press
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -92,27 +95,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         message = ""
 
         try:
+            # ============================
+            # PAN / TILT CONTROLS
+            # ============================
             if cmd == "pan_left":
-                motors.goto_delta(pan_delta_deg=-5, tilt_delta_deg=0)
-                message = "Panned left 5°"
+                Handler.current_pan -= Handler.STEP
+                motors.goto(pan_deg=Handler.current_pan,
+                            tilt_deg=Handler.current_tilt)
+                message = f"Panned left to {Handler.current_pan:.1f}°"
 
             elif cmd == "pan_right":
-                motors.goto_delta(pan_delta_deg=+5, tilt_delta_deg=0)
-                message = "Panned right 5°"
+                Handler.current_pan += Handler.STEP
+                motors.goto(pan_deg=Handler.current_pan,
+                            tilt_deg=Handler.current_tilt)
+                message = f"Panned right to {Handler.current_pan:.1f}°"
 
             elif cmd == "tilt_up":
-                motors.goto_delta(pan_delta_deg=0, tilt_delta_deg=+5)
-                message = "Tilted up 5°"
+                Handler.current_tilt += Handler.STEP
+                motors.goto(pan_deg=Handler.current_pan,
+                            tilt_deg=Handler.current_tilt)
+                message = f"Tilted up to {Handler.current_tilt:.1f}°"
 
             elif cmd == "tilt_down":
-                motors.goto_delta(pan_delta_deg=0, tilt_delta_deg=-5)
-                message = "Tilted down 5°"
+                Handler.current_tilt -= Handler.STEP
+                motors.goto(pan_deg=Handler.current_pan,
+                            tilt_deg=Handler.current_tilt)
+                message = f"Tilted down to {Handler.current_tilt:.1f}°"
 
+            # ============================
+            # ZERO
+            # ============================
             elif cmd == "zero":
                 motors.zero()
+                Handler.current_pan = 0.0
+                Handler.current_tilt = 0.0
                 GPIO.output(LASER_PIN, GPIO.LOW)
                 message = "Motors zeroed"
 
+            # ============================
+            # LASER CONTROL
+            # ============================
             elif cmd == "laser_on":
                 GPIO.output(LASER_PIN, GPIO.HIGH)
                 message = "Laser turned ON"
@@ -121,6 +143,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 GPIO.output(LASER_PIN, GPIO.LOW)
                 message = "Laser turned OFF"
 
+            # ============================
+            # READ JSON
+            # ============================
             elif cmd == "read_json":
                 data = requests.get(JSON_URL, timeout=2).json()
                 message = json.dumps(data, indent=2)
@@ -131,7 +156,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             message = f"Error: {e}"
 
-        # serve web page
+        # Return webpage
         page = PAGE.replace("{MESSAGE}", message.replace("\n", "<br>"))
         self.send_response(200)
         self.send_header("Content-type", "text/html")
