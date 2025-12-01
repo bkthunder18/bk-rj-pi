@@ -148,7 +148,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # ============================
             elif cmd == "read_json":
                 data = requests.get(JSON_URL, timeout=2).json()
-                message = json.dumps(data, indent=2)
+
+                team_id = "2"   # <<--- YOUR TEAM NUMBER
+                try:
+                    team_data = data["turrets"][team_id]
+                    r = team_data["r"]
+                    theta = team_data["theta"]
+                    message = f"Team {team_id} location:<br>r = {r}<br>theta = {theta}"
+                except KeyError:
+                    message = f"Team {team_id} not found in JSON file."
+
 
             else:
                 message = "Ready."
